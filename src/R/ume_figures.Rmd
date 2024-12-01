@@ -1,0 +1,1365 @@
+---
+title: "figures"
+output: html_document
+date: "2023-07-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(dplyr)
+library(data.table)
+library(magrittr)
+library(haven)
+library(readxl)
+library(ggplot2)
+library(cowplot)
+library(ggstatsplot)
+library(ggsci)
+
+library(survminer)
+library(survival)
+
+```
+
+# Paths & pallettes
+```{r}
+
+# cohorts
+CASE_PATH <-  '/PATH/projects/explant/int/prepared_data/case_2024-10-04.rds'
+CONTROL_PATH <-  '/PATH/projects/explant/int/prepared_data/control_2024-10-04.rds'
+PSM_PATH <-  '/PATH/projects/explant/int/prepared_data/psm_2024-10-04.rds'
+
+
+# palettes
+scales::show_col(ggsci::pal_jco('default', alpha = 1)(9))
+pal_jco = ggsci::pal_jco('default', alpha = 1)(9)
+pal_stage = c('in situ'=pal_jco[8], '1'=pal_jco[5],'2'=pal_jco[6],'3'=pal_jco[4],'4'=pal_jco[2], 'unknown'='lightgrey') 
+pal_groups = c('Neuroendocrine'=pal_jco[2],'NSCLC-1/2'=pal_jco[1],'NSCLC-3/4'=pal_jco[9], 'PSM-Control'=pal_jco[4], 'Unmatched-SRTR'='grey')
+
+
+```
+
+# Load and reformat for analysis
+```{r}
+
+# Case
+##############
+case <- readRDS(CASE_PATH) %>%
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  ## reformat
+  mutate(TRANSPLANT_YEAR = year(REC_TX_DT)) %>%
+  mutate(specific = factor(specific, levels = c('Adenocarcinoma','SCC','NSCLC-other','Neuroendocrine','SCLC'))) %>%
+  mutate(TREATMENT_ANY_BINARY = ifelse(grepl('chemo|rad|immuno', TREATMENT_ANY), 'treated', 'none')) %>%
+  mutate(stgp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', 'unk')) %>%
+  mutate(stgp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', stgp)) %>%
+  mutate(stgp = ifelse(specific %in% c('Neuroendocrine', 'SCLC'), as.character(specific), stgp)) %>%
+  mutate(stgp = factor(stgp, levels = c('NSCLC-1/2','NSCLC-3/4', 'Neuroendocrine', 'SCLC', 'unk'))); table(case$stgp)
+##############
+
+
+# Case reformat
+##############
+tmp1 <- readRDS(CASE_PATH) %>%
+  ## reformat
+  select(PX_ID, PUF_CASE_ID, broad, specific, group, histology_behavior_desc,
+         match_exact, match_group1, match_group2, match_group3,
+         AGE, SEX, RACE, BMI, SMOKING, REC_TX_PROCEDURE_TY_BINARY, CAN_DGN, PRIOR_MALIGNANCY, FUNCTIONAL_STATUS, LIFE_SUPPORT, PRIOR_THORACIC_SURGERY,
+         OS_SRTR, DEAD_SRTR, TNM_STAGE_GROUP_GEN, SRTR_COD, REC_TX_DT,
+         DON_AGE,DON_GENDER,DON_RACE_SRTR,DON_CAD_DON_COD,DON_HIST_CANCER,
+         ## txts
+         induction_anti_IL2, induction_calcineurin_inhibitor, induction_glucocorticoid, induction_mTOR_inhibitor, induction_nucleotide_blocking, induction_thymoglobulin,
+         maint_anti_IL2, maint_calcineurin_inhibitor, maint_glucocorticoid, maint_mTOR_inhibitor, maint_nucleotide_blocking, maint_thymoglobulin,
+         mo3_calcineurin_inhibitor, mo3_glucocorticoid, mo3_nucleotide_blocking, mo3_thymoglobulin,
+         mo6_anti_IL2, mo6_calcineurin_inhibitor, mo6_glucocorticoid, mo6_mTOR_inhibitor, mo6_nucleotide_blocking, mo6_thymoglobulin,
+         mo12_anti_IL2, mo12_calcineurin_inhibitor, mo12_glucocorticoid, mo12_mTOR_inhibitor, mo12_nucleotide_blocking, mo12_thymoglobulin
+         ) 
+##############
+
+
+# Control
+##############
+tmp2 <- readRDS(CONTROL_PATH) %>%
+  select(PX_ID, 
+         AGE, SEX, RACE, BMI, SMOKING, REC_TX_PROCEDURE_TY_BINARY, CAN_DGN, PRIOR_MALIGNANCY, FUNCTIONAL_STATUS, LIFE_SUPPORT, PRIOR_THORACIC_SURGERY,
+         OS_SRTR, DEAD_SRTR, SRTR_COD,REC_TX_DT,
+         DON_AGE,DON_GENDER,DON_RACE_SRTR,DON_CAD_DON_COD,DON_HIST_CANCER,
+         ## txts
+         induction_anti_IL2, induction_calcineurin_inhibitor, induction_glucocorticoid, induction_mTOR_inhibitor, induction_nucleotide_blocking, induction_thymoglobulin,
+         maint_anti_IL2, maint_calcineurin_inhibitor, maint_glucocorticoid, maint_mTOR_inhibitor, maint_nucleotide_blocking, maint_thymoglobulin,
+         mo3_calcineurin_inhibitor, mo3_glucocorticoid, mo3_nucleotide_blocking, mo3_thymoglobulin,
+         mo6_anti_IL2, mo6_calcineurin_inhibitor, mo6_glucocorticoid, mo6_mTOR_inhibitor, mo6_nucleotide_blocking, mo6_thymoglobulin,
+         mo12_anti_IL2, mo12_calcineurin_inhibitor, mo12_glucocorticoid, mo12_mTOR_inhibitor, mo12_nucleotide_blocking, mo12_thymoglobulin
+         )
+##############
+
+
+# pull group memeberships
+##############
+tmp <- tmp1 %>% filter(match_exact=='match') %>% merge(., readRDS(PSM_PATH), by='PX_ID') %>% pull(propensity_match) %>% as.character()
+exact <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+tmp <- tmp1 %>% filter(match_group1=='match') %>% merge(., readRDS(PSM_PATH), by='PX_ID') %>% pull(propensity_match) %>% as.character()
+gp1 <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+tmp <- tmp1 %>% filter(match_group3=='match') %>% merge(., readRDS(PSM_PATH), by='PX_ID') %>% pull(propensity_match) %>% as.character()
+gp3 <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+##############
+
+
+# Combine
+##############
+## gps
+dat <- rbindlist( list(tmp1, tmp2), fill=T, use.names = T) %>%
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  ## reformat match groups
+  mutate(match_exact= ifelse( is.na(match_exact) & !is.na(propensity_match) & PX_ID %in% exact, 'control', match_exact)) %>%
+  mutate(match_exact= ifelse( is.na(match_exact), 'all', match_exact)) %>%
+  mutate(match_group1= ifelse( is.na(match_group1) & !is.na(propensity_match) & PX_ID %in% gp1, 'control', match_group1)) %>%
+  mutate(match_group1= ifelse( is.na(match_group1), 'all', match_group1)) %>%
+  mutate(match_group2= ifelse( is.na(match_group2) & !is.na(propensity_match), 'control', match_group2)) %>%
+  mutate(match_group2= ifelse( is.na(match_group2), 'all', match_group2)) %>%
+  mutate(match_group3= ifelse( is.na(match_group3) & !is.na(propensity_match) & PX_ID %in% gp3, 'control', match_group3)) %>%
+  mutate(match_group3= ifelse( is.na(match_group3), 'all', match_group3)) %>%
+  # reformat other
+  mutate(TRANSPLANT_YEAR = year(REC_TX_DT)) %>%
+  mutate(broad= ifelse( is.na(broad) & !is.na(propensity_match), 'control', broad)) %>%
+  mutate(broad= ifelse( is.na(broad), 'all', broad)) %>%
+  mutate(cohort = ifelse(broad %in% c('neuroendocrine','NSCLC','SCLC'), 'ielc', broad)) %>%
+  mutate(cohort = factor(cohort, levels=c('ielc','control','all'))) %>%
+  mutate(specific= ifelse( is.na(specific) & !is.na(propensity_match), 'control', specific)) %>%
+  mutate(specific= ifelse( is.na(specific), 'all', specific)) %>%
+  mutate(specific = factor(specific, levels = c('Adenocarcinoma','SCC','NSCLC-other','Neuroendocrine','SCLC','control','all'))) %>%
+  mutate(group= ifelse( is.na(group) & !is.na(propensity_match), 'control', as.character(group))) %>%
+  mutate(group= ifelse( is.na(group), 'all', group)) %>%
+  mutate(TNM_STAGE_GROUP_GEN= ifelse( is.na(TNM_STAGE_GROUP_GEN) & !is.na(propensity_match), 'control', as.character(TNM_STAGE_GROUP_GEN))) %>%
+  mutate(TNM_STAGE_GROUP_GEN= ifelse( is.na(TNM_STAGE_GROUP_GEN), 'all', TNM_STAGE_GROUP_GEN)) 
+##############
+  
+```
+
+
+# TABLES
+# Table 1
+```{r}
+
+# Vars
+###########
+tmp2 <- c('TUMOR_SIZE_GP','RX_SUMM_SURGICAL_MARGINS','LATERALITY', 
+          'COMB_T_GEN','COMB_N_GEN','COMB_M_GEN', 'TNM_STAGE_GROUP_GEN',
+          'BEHAVIOR','GRADE')
+###########
+
+
+# table
+###########
+## categorical
+for(v in tmp2){
+  print(v)
+  print( table(case[[v]], case[['specific']]) )
+  table(case[[v]], case[['specific']]) %>% prop.table(margin = 2) %>% round(digits = 2) %>% print()
+}
+###########
+
+
+# combined
+###########
+for(v in tmp2){
+  print(v)
+  print( table(case[[v]]) )
+  table(case[[v]]) %>% prop.table() %>% round(digits = 3) %>% print()
+}
+###########
+
+
+
+```
+
+# Table 2
+```{r}
+
+# Vars
+###########
+tmp1 <- c('AGE','BMI','TRANSPLANT_YEAR')
+tmp2 <- c('SEX','RACE','SMOKING','CAN_DGN','REC_TX_PROCEDURE_TY_BINARY','PRIOR_THORACIC_SURGERY','PRIOR_MALIGNANCY','FUNCTIONAL_STATUS','LIFE_SUPPORT')
+###########
+
+
+# table
+###########
+## contin
+dat %>%
+  mutate(v=AGE) %>%
+  mutate(v=BMI) %>%
+  #mutate(v=TRANSPLANT_YEAR) %>%
+  group_by(cohort) %>%
+  summarise(
+    median = median(v),
+    # min = summary(v)[1],
+    # max = summary(v)[6],
+    q1 = summary(v)[2],
+    q3 = summary(v)[5],
+    # u = summary(v)[4],
+    n = n()
+  ) 
+
+## categorical
+for(v in tmp2){
+  print(v)
+  print( table(dat[[v]], dat[['cohort']]) )
+  table(dat[[v]], dat[['cohort']]) %>% prop.table(margin = 2) %>% round(digits = 2) %>% print()
+}
+## categorical (all)
+for(v in tmp2){
+  print( table( dat[[v]]) )
+  table(dat[[v]]) %>% prop.table() %>% round(digits = 2) %>% print()
+}
+###########
+
+
+# significance
+###########
+## continuous
+for(v in tmp1){
+  tmp <- dat %>%
+    mutate(comp = ifelse(broad %in% c('neuroendocrine','NSCLC','SCLC'), 'lcioe', broad)) %>%
+    filter(comp %in% c('control','lcioe'))
+  hold1 <- tmp %>% filter(comp =='control')
+  hold2 <- tmp %>% filter(comp=='lcioe')
+  print(v)
+  print( paste0('mean all: ', mean(hold1[[v]]) ))
+  print( paste0('median all: ', median(hold1[[v]]) ))
+  print( paste0('mean lcioe: ', mean(hold2[[v]]) ))
+  print( paste0('median lcioe: ', median(hold2[[v]]) ))
+  print( wilcox.test(hold1[[v]], hold2[[v]], paired = F  ))
+}
+## categorical (no BAC throwing error for control groups; just refactor CAN_DGN)
+for(v in tmp2){
+  tmp <- dat %>%
+    mutate(comp = ifelse(broad %in% c('neuroendocrine','NSCLC','SCLC'), 'lcioe', broad)) %>%
+    filter(comp %in% c('control','lcioe'))
+  print(v)
+  print( table(tmp[[v]], tmp[['comp']]) )
+  table(tmp[[v]], tmp[['comp']]) %>% prop.table(margin = 2) %>% round(digits = 3) %>% print()
+  print( chisq.test(table(tmp[[v]], tmp[['comp']]) , simulate.p.value = T) )
+}
+###########
+
+
+# adjust
+###########
+## PSM vs IELC
+p.adjust(c(0.31,0.32,0.98,0.82,0.40,0.90,0.52,0.34,0.82,0.79,0.85), method = 'bonferroni')
+## all vs IELC
+p.adjust(c(8.3e-9,0.38,0.20,0.68,5.0e-4,4e-3,0.63,1,9e-5,0.65,0.15), method = 'bonferroni')
+###########
+
+```
+
+# Supplementary Table 2
+```{r}
+
+# prepare
+###########  
+tmp <- dat %>%
+  ## reformat
+  mutate(stgp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1') & broad=='NSCLC', 'NSCLC-1', 'unk')) %>%
+  mutate(stgp=ifelse(TNM_STAGE_GROUP_GEN %in% c('2','3','4') & broad=='NSCLC', 'NSCLC-2/3/4', stgp)) %>%
+  mutate(stgp = ifelse(specific %in% c('Neuroendocrine', 'SCLC'), as.character(specific), stgp)) %>%
+  mutate(stgp = factor(stgp, levels = c('NSCLC-1','NSCLC-2/3/4', 'Neuroendocrine', 'SCLC', 'unk'))) %>%
+  mutate(broad = ifelse(broad=='all', 'unmatched_control', broad)) %>%
+  mutate(broad = ifelse(broad=='control', 'psm_control', broad)) %>%
+  mutate(specific = ifelse(specific %in% c('control','all'), broad, as.character(specific))) %>%
+  mutate(TNM_STAGE_GROUP_GEN = ifelse(broad %in% c('unmatched_control','psm_control'), NA, TNM_STAGE_GROUP_GEN)) %>%
+  mutate(stage_group = ifelse(stgp=='unk', NA, as.character(stgp))) %>%
+  select(PX_ID, PUF_CASE_ID, broad, specific, stage_group, TNM_STAGE_GROUP_GEN, histology_behavior_desc, propensity_match, propensity_score, propensity_model) %>%
+  arrange(propensity_match,PUF_CASE_ID)
+## save
+write.table(tmp, '/PATH/projects/explant/out/tables/st2_pxids.txt', row.names = F, col.names = T, quote = F, sep = '\t')
+###########
+
+```
+
+# Supplementary Table 3
+```{r}
+
+# Vars
+###########
+tmp1 <- c('DON_AGE')
+tmp2 <- c('DON_GENDER','DON_RACE_SRTR','cod','hxcx')
+###########
+
+
+# table
+###########
+## categorical
+tmp <- dat %>% 
+  mutate(comp = ifelse(broad %in% c('neuroendocrine','NSCLC','SCLC'), 'lcioe',as.character(broad))) %>%
+  mutate(cod = ifelse(DON_CAD_DON_COD %in% c(1), 'anoxia', 'unknown')) %>%
+  mutate(cod = ifelse(DON_CAD_DON_COD %in% c(2), 'stroke', cod)) %>%
+  mutate(cod = ifelse(DON_CAD_DON_COD %in% c(3), 'trauma', cod)) %>%
+  mutate(cod = ifelse(DON_CAD_DON_COD %in% c(4), 'cnstumor', cod)) %>%
+  mutate(hxcx = ifelse(DON_HIST_CANCER %in% c(2:35), 'yes', 'unknown')) %>%
+  mutate(hxcx = ifelse(DON_HIST_CANCER %in% c(2), 'yes-skin-bcc', hxcx)) %>%
+  mutate(hxcx = ifelse(DON_HIST_CANCER %in% c(1), 'no', hxcx)) %>%
+  mutate(hxcx = ifelse(DON_HIST_CANCER %in% c(34), 'lung', hxcx)) 
+## categorical
+for(v in tmp2){
+  print(v)
+  print( table(tmp[[v]], tmp[['comp']]) )
+  table(tmp[[v]], tmp[['comp']]) %>% prop.table(margin = 2) %>% round(digits = 2) %>% print()
+}
+## continuous
+tmp %>%
+  mutate(v=DON_AGE) %>%
+  group_by(comp) %>%
+  summarise(
+    median = median(v),
+    q1 = summary(v)[2],
+    q3 = summary(v)[5]
+  ) 
+###########
+
+
+
+```
+
+# Supplementary Table 4 - immunosuppression
+```{r}
+
+# 
+###########
+colnames(dat)[grepl('maint', colnames(dat))]
+vars <- c(
+  ## induction
+  #'induction_thymoglobulin',"induction_anti_IL2","induction_calcineurin_inhibitor",
+  #"induction_glucocorticoid","induction_mTOR_inhibitor","induction_nucleotide_blocking",
+  ## maintenance
+  "maint_thymoglobulin","maint_anti_IL2","maint_calcineurin_inhibitor",
+  "maint_glucocorticoid","maint_mTOR_inhibitor","maint_nucleotide_blocking",
+  ## 3 mo
+  #"mo3_thymoglobulin","mo3_calcineurin_inhibitor",
+  #"mo3_glucocorticoid", "mo3_nucleotide_blocking",
+  ## 6 mo
+  #"mo6_thymoglobulin","mo6_anti_IL2","mo6_calcineurin_inhibitor",
+  #"mo6_glucocorticoid","mo6_mTOR_inhibitor","mo6_nucleotide_blocking",
+  ## 12 mo
+  "mo12_thymoglobulin","mo12_anti_IL2","mo12_calcineurin_inhibitor",
+  "mo12_glucocorticoid","mo12_mTOR_inhibitor","mo12_nucleotide_blocking"
+  )
+###########
+
+
+# 
+###########
+for(v in vars){
+  print(v)
+  print( table(dat[[v]], dat[['cohort']]) )
+  table(dat[[v]], dat[['cohort']]) %>% prop.table(margin = 2) %>% round(digits = 2) %>% print()
+  dat %>% filter(cohort != 'all') %>% mutate(cohort = factor(cohort)) %$% table(get(v), cohort) %>% chisq.test(., simulate.p.value = T) %>% print()
+  dat %>% filter(cohort != 'control') %>% mutate(cohort = factor(cohort)) %$% table(get(v), cohort) %>% chisq.test(., simulate.p.value = T) %>% print()
+}
+###########
+
+
+# adjust
+###########
+## IELC vs psm
+p.adjust(c(0.0025,0.64,0.04,0.35,NA,NA,0.91,0.82,1,0.16,NA, 0.35), method = 'bonferroni')
+## IELC vs unmatched
+p.adjust(c(0.004,0.37,0.11,0.4,NA,NA,1,1,0.6,0.44,1,0.17), method = 'bonferroni')
+###########
+
+```
+
+# Supplementary Table 5
+```{r}
+
+# Vars
+###########
+tmp2 <- c('TREATMENT_ANY_BINARY','TREATMENT_SURGERY','TREATMENT_RADIATION','TREATMENT_CHEMO','TREATMENT_IMMUNO')
+###########
+
+
+# table
+###########
+## categorical
+for(v in tmp2){
+  print( table(case[[v]], case[['stgp']]) )
+  table(case[[v]], case[['stgp']]) %>% prop.table(margin = 2) %>% round(digits = 2) %>% print()
+}
+###########
+
+
+###############
+tmp <- case %>%
+  filter(stgp == 'Neuroendocrine') %>%
+  #filter(OS_SRTR>3) %>%
+  ## reformat
+  mutate(ts= TREATMENT_ANY_BINARY) %>%
+  mutate(ts= ifelse(TREATMENT_ANY %in% c('unknown'), NA, ts)) %>%
+  mutate(ts = factor(ts, levels = c('none','treated'))) %>%
+  rowwise() %>%
+  mutate(time = ifelse(ts=='treated', min(DX_RAD_STARTED_DAYS, DX_CHEMO_STARTED_DAYS, DX_IMMUNO_STARTED_DAYS, na.rm = T), NA)) %>%
+  select(ts, time, TREATMENT_CHEMO, TREATMENT_RADIATION, TREATMENT_IMMUNO, DX_CHEMO_STARTED_DAYS, DX_RAD_STARTED_DAYS, DX_IMMUNO_STARTED_DAYS, RX_SUMM_SURGICAL_MARGINS) %>%
+  filter(ts=='treated')
+summary(tmp$time)
+table(tmp$RX_SUMM_SURGICAL_MARGINS, tmp$TREATMENT_RADIATION)
+###############
+
+```
+
+
+# Figure 2
+# KM - NSCLC by Stage (I, II, III, IV)
+```{r}
+
+# broad
+#############
+tmp <- case %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown', '0')) %>%
+  filter(broad %in% c('NSCLC')) %>%
+  #filter(TNM_STAGE_GROUP_GEN %in% c('1','4')) %>%
+  ## reformat
+  mutate(comp=factor(TNM_STAGE_GROUP_GEN)); table(tmp$comp)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = 'Stage:', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("1", "2", "3", "4"),
+                        palette = pal_stage[2:5],
+                        xlab = 'Time (months)');p
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc_stage.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+pdf('/PATH/projects/explant/out/figures/km_nsclc_stage_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+```
+
+# KM - Neuroendocrine by Stage (I, II, III, IV)
+```{r}
+
+# broad
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown')) %>%
+  filter(broad %in% c('neuroendocrine')) %>%
+  ## reformat
+  mutate(comp=TNM_STAGE_GROUP_GEN) 
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = 'Stage:', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("1", "2", "3", "4"),
+                        palette = pal_stage[2:5],
+                        xlab = 'Time (months)');p
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_neuroendocrine_stage.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+pdf('/PATH/projects/explant/out/figures/km_neuroendocrine_stage_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+```
+
+# KM - histology/stage groups
+```{r}
+
+# broad
+#############
+tmp <- case %>%
+  ## filter
+  #filter(! TNM_STAGE_GROUP_GEN %in% c('unknown', '0')) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', 'unk')) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) %>%
+  #filter(comp != 'NSCLC-3/4') %>%
+  #filter(comp != 'Neuroendocrine') %>%
+  filter(!comp %in% c('unk')); table(tmp$comp)
+  
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F, 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.title = '', legend = 'none',
+                        #legend.labs = c("Neuroendocrine", "NSCLC-1/2", "NSCLC-3/4"),
+                        #palette = pal_groups[1:3],
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+## 1-year OS
+summary(survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data = tmp), times = 12)
+summary(survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data = tmp), times = 60)
+case %>% filter(stgp=='NSCLC-1/2') %>% pull(TRANSPLANT_YEAR) %>% summary()
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc_neuroendocrine_gps.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+pdf('/PATH/projects/explant/out/figures/km_nsclc_neuroendocrine_gps_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+```
+
+
+# Figure 3
+# KM - NSCLC 1/2 vs control
+```{r}
+
+# groups
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown','0')) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp %in% c('NSCLC-1/2')) %>% 
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  pull(propensity_match) %>% 
+  as.character()
+matches <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+#############
+
+
+# plot
+#############
+tmp <- dat %>%
+  ## filter
+  #filter(PX_ID %in% matches) %>%
+  filter(PX_ID %in% matches | match_group2=='all') %>%
+  #filter( (PX_ID %in% matches & group!='control') | match_group2=='all') %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp != "all")
+table(tmp$comp)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = '', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        #legend.labs = c("Unmatched-SRTR", "PSM-Control", "NSCLC-1"),
+                        #palette = c("grey", "black", pal_groups[[2]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc1_psm_all.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+pdf('/PATH/projects/explant/out/figures/km_nsclc1_psm_all_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+```
+
+# KM - NSCLC 3/4 vs control
+```{r}
+
+# groups
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown')) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', 'unk')) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp %in% c('NSCLC-3/4')) %>% 
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  pull(propensity_match) %>% 
+  as.character()
+matches <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+#############
+
+
+# plot
+#############
+tmp <- dat %>%
+  ## filter
+  #filter(PX_ID %in% matches) %>%
+  filter(PX_ID %in% matches | match_group2=='all') %>%
+  #filter( (PX_ID %in% matches & group!='control') | match_group2=='all') %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp=factor(comp, levels = c("all", "control", "NSCLC-3/4"))) %>%
+  filter(comp != 'all')
+table(tmp$comp)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = '', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        #legend.labs = c("Unmatched-SRTR", "PSM-Control", "NSCLC-2/3/4"),
+                        #palette = c("grey", "black", pal_groups[[3]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc234_psm_all.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+pdf('/PATH/projects/explant/out/figures/km_nsclc234_psm_all_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+```
+
+# KM - Neuroendocrine vs control
+```{r}
+
+# groups
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter( !(TNM_STAGE_GROUP_GEN %in% c('unknown') & broad %in% c('NSCLC')) ) %>%
+  filter(PX_ID %in% dat$PX_ID) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('2','3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp %in% c('Neuroendocrine')) %>% 
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  pull(propensity_match) %>% 
+  as.character()
+matches <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+#############
+
+
+# plot
+#############
+tmp <- dat %>%
+  ## filter
+  #filter(PX_ID %in% matches) %>%
+  filter(PX_ID %in% matches | match_group2=='all') %>%
+  #filter( (PX_ID %in% matches & group!='control') | match_group2=='all') %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) %>%
+  mutate(comp=factor(comp, levels = c("all", "control", "Neuroendocrine"))) %>%
+  filter(comp != 'control')
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = '', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        #legend.labs = c("Unmatched-SRTR", "PSM-Control", "Neuroendocrine"),
+                        #palette = c("grey", "black", pal_jco[[2]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_neuro_psm_all.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+pdf('/PATH/projects/explant/out/figures/km_neuro_psm_all_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+
+```
+
+# Figure 4
+
+# Mosaic plot - histologies-stage vs control
+```{r fig.width=6, fig.height=4}
+
+# group
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID'); table(tmp$comp)
+#############
+
+
+# get matches
+#############
+## 1
+hold <- tmp %>% filter(comp %in% 'NSCLC-1/2') %>% pull(propensity_match) %>% as.character()
+tmp1 <- readRDS(PSM_PATH) %>% filter(propensity_match %in% hold) %>% pull(PX_ID) 
+## 2/3/4
+hold <- tmp %>% filter(comp %in% 'NSCLC-3/4') %>% pull(propensity_match) %>% as.character()
+tmp2 <- readRDS(PSM_PATH) %>% filter(propensity_match %in% hold) %>% pull(PX_ID) 
+## Neuroendocrine
+hold <- tmp %>% filter(comp %in% 'Neuroendocrine') %>% pull(propensity_match) %>% as.character()
+tmp3 <- readRDS(PSM_PATH) %>% filter(propensity_match %in% hold) %>% pull(PX_ID) 
+#############
+
+
+# prep
+#############
+tmp <- dat %>%
+  ## filter
+  filter(PX_ID %in% c(tmp1,tmp2,tmp3) | broad=='all') %>%
+  filter(DEAD_SRTR==1) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) %>%
+  mutate(comp = ifelse(comp=='control' & PX_ID %in% tmp1, 'NSCLC-1/2-control', comp)) %>%
+  mutate(comp = ifelse(comp=='control' & PX_ID %in% tmp2, 'NSCLC-3/4-control', comp)) %>%
+  mutate(comp = ifelse(comp=='control' & PX_ID %in% tmp3, 'Neuroendocrine-control', comp)) %>%
+  mutate(comp=factor(comp, levels = c('NSCLC-1/2','NSCLC-1/2-control','NSCLC-3/4','NSCLC-3/4-control','Neuroendocrine','Neuroendocrine-control','all'))) %>%
+  ## 
+  mutate(cod = ifelse(SRTR_COD %in% c('malignancy','malignancy_other'), 'cancer','other')) %>%
+  mutate(cod = ifelse(SRTR_COD %in% c('unknown'), 'unknown',cod)) 
+#############
+
+
+# plot nsclc1/2
+#############
+hold <- tmp %>% filter(grepl('NSCLC-1/2',comp)) %>% mutate(comp = factor(comp))
+test <- chisq.test(table( hold$cod, hold$comp) );test
+p1 <- hold %>%
+  mutate(comp=factor(comp)) %>%
+  ggbarstats(., 
+             cod, comp,
+             results.subtitle = FALSE,
+             subtitle = paste0(
+               "p=",
+               ifelse(test$p.value < 0.001, "< 0.001", round(test$p.value, 3))
+             ),
+             label.args = aes(size=6, fill='white'),
+             legend.title = 'Tumor stage'
+  ) + 
+  theme_cowplot() +
+  scale_fill_manual(values = c('unknown'='lightgrey','cancer'=pal_jco[[2]], 'other'=pal_jco[[1]])) +
+  theme(legend.position = 'none',
+        legend.text = element_blank(),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        axis.text = element_blank(),
+        axis.title.x = element_blank()); print(p1)
+###########
+
+
+# plot nsclc34
+#############
+hold <- tmp %>% filter(grepl('NSCLC-3/4',comp)) %>% mutate(comp = factor(comp))
+test <- chisq.test(table( hold$cod, hold$comp) );test
+p2 <- hold %>%
+  mutate(comp=factor(comp)) %>%
+  ggbarstats(., 
+             cod, comp,
+             results.subtitle = FALSE,
+             subtitle = paste0(
+               "p=",
+               ifelse(test$p.value < 0.001, "< 0.001", round(test$p.value, 3))
+             ),
+             label.args = aes(size=6, fill='white'),
+             legend.title = 'Tumor stage'
+  ) + 
+  theme_cowplot() +
+  scale_fill_manual(values = c('unknown'='lightgrey','cancer'=pal_jco[[2]], 'other'=pal_jco[[1]])) +
+  theme(legend.position = 'none',
+        legend.text = element_blank(),
+        legend.title = element_blank(),
+        axis.line.y = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        axis.ticks.y = element_blank(),
+        axis.text = element_blank(),
+        axis.title.x = element_blank()); print(p2)
+###########
+
+
+# plot neuro
+#############
+hold <- tmp %>% filter(grepl('Neuroendocrine',comp)) %>% mutate(comp = factor(comp))
+test <- chisq.test(table( hold$cod, hold$comp) );test
+p3 <- hold %>%
+  mutate(comp=factor(comp)) %>%
+  ggbarstats(., 
+             cod, comp,
+             results.subtitle = FALSE,
+             subtitle = paste0(
+               "p=",
+               ifelse(test$p.value < 0.001, "< 0.001", round(test$p.value, 3))
+             ),
+             label.args = aes(size=6, fill='white'),
+             legend.title = 'Tumor stage'
+  ) + 
+  theme_cowplot() +
+  scale_fill_manual(values = c('unknown'='lightgrey','cancer'=pal_jco[[2]], 'other'=pal_jco[[1]])) +
+  theme(legend.position = 'none',
+        legend.text = element_blank(),
+        legend.title = element_blank(),
+        axis.line.y = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        axis.ticks.y = element_blank(),
+        axis.text = element_blank(),
+        axis.title.x = element_blank()); print(p3)
+###########
+
+
+# plot all
+#############
+hold <- tmp %>% filter(grepl('all',comp))
+p4 <- hold %>%
+  mutate(comp=factor(comp)) %>%
+  ggbarstats(., 
+             cod, comp,
+             results.subtitle = FALSE,
+             subtitle = paste0(' '),
+             label.args = aes(size=6, fill='white'),
+             legend.title = 'Tumor stage'
+  ) + 
+  theme_cowplot() +
+  scale_fill_manual(values = c('unknown'='lightgrey','cancer'=pal_jco[[2]], 'other'=pal_jco[[1]])) +
+  theme(legend.position = 'right',
+        legend.text = element_blank(),
+        legend.title = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        axis.text = element_blank(),
+        axis.title.x = element_blank()); print(p4)
+###########
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/mosaic_cod_all.pdf', onefile = F, width = 6.25, height = 4)
+p <- plot_grid(plotlist = list(p1,p2,p3,p4), nrow = 1, rel_widths = c(1,1,1,.86));p
+dev.off()
+###########
+
+
+```
+
+# KM - NSCLC-3/4 - by treatment
+```{r}
+
+# broad
+#############
+tmp <- case %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  mutate(cod = ifelse(SRTR_COD %in% c('malignancy','malignancy_other'), 'cancer','other')) %>%
+  mutate(cod = ifelse(SRTR_COD %in% c('unknown'), 'unknown',cod)) %>%
+  filter(comp=='NSCLC-3/4') %>%
+  filter(OS_SRTR>3) %>%
+  mutate(comp = TREATMENT_ANY_BINARY)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = T, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.title = '', legend = 'none',
+                        legend.labs = c("NSCLC-3/4", "NSCLC-3/4-treated"),
+                        palette = c('NSCLC-3/4'=pal_jco[[3]], 'NSCLC-3/4-treated'=pal_jco[[9]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc_txt.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+pdf('/PATH/projects/explant/out/figures/km_nsclc_txt_lg.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+```
+
+# Supplementary Figure 1
+
+# Correlation - scatter survival
+```{r}
+
+#
+##########
+p <- case %>%
+  mutate(dead = ifelse( (DEAD_NCDB==1 & DEAD_SRTR==1), 'agree', 'disagree')) %>%
+  mutate(dead = ifelse( (DEAD_NCDB==0 & DEAD_SRTR==0), 'agree', dead)) %>%
+  mutate(dead = ifelse(is.na(DEAD_NCDB) | is.na(DEAD_SRTR), 'unknown', dead)) %>%
+  filter(dead!='unknown') %>%
+  ggscatter(., x = "OS_SRTR", y = "OS_NCDB",
+            fill = "dead", shape = 21, size = 3, # Points color, shape and size
+            add = "reg.line",  # Add regressin line
+            add.params = list(color = pal_jco[[4]], fill = "lightgray"), # Customize reg. line
+            conf.int = TRUE, # Add confidence interval
+            cor.coef = T, # Add correlation coefficient. see ?stat_cor
+            cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")
+  ) +
+  scale_fill_manual(values=c('agree'='black','disagree'=pal_jco[[5]])) + 
+  theme(legend.position = 'right',
+        axis.title = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        legend.text = element_blank(),
+        legend.title = element_blank());p
+##########
+
+
+# Intraclass correation
+##########
+tmp <- case %>%
+  select(OS_SRTR, OS_NCDB) 
+irr::icc(tmp, model = 'oneway',type = 'consistency', unit='single')
+##########
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/cor_os.pdf', onefile = F, width = 6, height = 4)
+p
+dev.off()
+###########
+
+```
+
+# Supplementary Figure 2 
+# Mosaic plot - histologies vs stages
+```{r}
+
+# 
+###########
+to_plot <- dat %>%
+  ## filter
+  filter(match_group2=='match') %>%
+  ## reformat
+  mutate(comp = ifelse(broad=='NSCLC', as.character(specific), as.character(broad))) %>%
+  mutate(comp = ifelse(comp=='neuroendocrine', 'Neuroendocrine', comp)) %>%
+  mutate(comp = factor(comp, levels = c('Adenocarcinoma', 'SCC','NSCLC-other','SCLC', 'Neuroendocrine'))) %>%
+  mutate(Stage = ifelse(TNM_STAGE_GROUP_GEN %in% c('0'), 'in situ', TNM_STAGE_GROUP_GEN)) %>%
+  mutate(Stage = factor(Stage, levels = rev(c('in situ','1','2','3','4','unknown')))) %>%
+  select(comp, Stage)
+#tmp <- fisher.test(table( to_plot$quartile, to_plot$mut) );tmp
+p <- to_plot %>%
+  ggbarstats(., 
+                Stage, comp,
+                results.subtitle = FALSE,
+                # subtitle = paste0(
+                #   tmp$method, ", p-value = ",
+                #   ifelse(tmp$p.value < 0.001, "< 0.001", round(tmp$p.value, 3))
+                # ),
+                legend.title = 'Tumor stage'
+) + 
+  theme_cowplot() +
+  scale_fill_manual(values = pal_stage) +
+  theme(legend.position = 'right',
+        legend.text = element_blank(),
+        legend.title = element_blank(),
+        axis.text = element_blank(),
+        axis.title.x = element_blank()); print(p)
+###########
+
+
+# PDF
+###########
+# pdf('/PATH/projects/explant/out/figures/mosaic_histology.pdf', onefile = F, width = 6, height = 4)
+# p
+# dev.off()
+###########
+
+
+```
+
+# Supplementary Figure 3
+
+# KM - NSCLC by Stage (I, II, III, IV) - stratified by subtype
+```{r}
+
+# broad
+#############
+tmp <- case %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown', '0')) %>%
+  filter(broad %in% c('NSCLC')) %>%
+  filter(specific=='Adenocarcinoma') %>%
+  ## reformat
+  mutate(comp=factor(TNM_STAGE_GROUP_GEN))
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = F, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = 'Stage:', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("1", "2", "3", "4"),
+                        palette = pal_stage[2:5],
+                        xlab = 'Time (months)');p
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc_acc_stage.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+pdf('/PATH/projects/explant/out/figures/km_nsclc_scc_stage.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+```
+
+# Supplementary Figure 4
+# KM - NSCLC by Stage (I, II, III, IV) - NCDB data
+```{r}
+
+# broad
+#############
+tmp <- case %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown', '0')) %>%
+  filter(broad %in% c('NSCLC')) %>%
+  #filter(TNM_STAGE_GROUP_GEN %in% c('1','4')) %>%
+  ## reformat
+  mutate(comp=factor(TNM_STAGE_GROUP_GEN)); table(tmp$comp)
+p <- survfit(Surv(OS_NCDB, DEAD_NCDB) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = 'Stage:', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("1", "2", "3", "4"),
+                        palette = pal_stage[2:5],
+                        xlab = 'Time (months)');p
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc_stage_ncdb.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+
+```
+
+# KM - Neuroendocrine by Stage (I, II, III, IV)  - NCDB data
+```{r}
+
+# broad
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(! TNM_STAGE_GROUP_GEN %in% c('unknown')) %>%
+  filter(broad %in% c('neuroendocrine')) %>%
+  filter(!is.na(OS_NCDB)) %>%
+  ## reformat
+  mutate(comp=factor(TNM_STAGE_GROUP_GEN)); table(tmp$comp)
+p <- survfit(Surv(OS_NCDB, DEAD_NCDB) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = 'Stage:', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("1", "3", "4"),
+                        palette = pal_stage[c(2,4,5)],
+                        xlab = 'Time (months)');p
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_neuroendocrine_stage_ncdb.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+## lg
+###########
+
+
+```
+
+# KM - histology/stage groups  - NCDB data
+```{r}
+
+# broad
+#############
+tmp <- case %>%
+  ## filter
+  #filter(! TNM_STAGE_GROUP_GEN %in% c('unknown', '0')) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', 'unk')) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) %>%
+  filter(comp != 'NSCLC-3/4') %>%
+  #filter(comp != 'Neuroendocrine') %>%
+  filter(!comp %in% c('unk')); table(tmp$comp)
+  
+p <- survfit(Surv(OS_NCDB, DEAD_NCDB) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F, 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.title = '', legend = 'none',
+                        #legend.labs = c("Neuroendocrine", "NSCLC-1/2", "NSCLC-3/4"),
+                        #palette = pal_groups[1:3],
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# PDF
+###########
+pdf('/PATH/projects/explant/out/figures/km_nsclc_neuroendocrine_gps_ncdb.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+###########
+
+```
+
+
+# Supplementary Figure 5
+# KM - NSCLC 1/2 vs control - DLTs
+```{r}
+
+# groups
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(REC_TX_PROCEDURE_TY_BINARY=='double') %>%
+  ## filter
+  filter( !(TNM_STAGE_GROUP_GEN %in% c('unknown') & broad %in% c('NSCLC')) ) %>%
+  filter(PX_ID %in% dat$PX_ID) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp %in% c('NSCLC-1/2')) %>% 
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  pull(propensity_match) %>% 
+  as.character()
+matches <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+#############
+
+
+# plot
+#############
+tmp <- dat %>%
+  ## filter
+  #filter(PX_ID %in% matches) %>%
+  filter(PX_ID %in% matches | match_group2=='all') %>%
+  #filter( (PX_ID %in% matches & group!='control') | match_group2=='all') %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', as.character(broad))) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) 
+  filter(comp != "all")
+table(tmp$comp)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = F, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = '', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("Unmatched-SRTR", "PSM-Control", "NSCLC-1/2"),
+                        palette = c("grey", "black", pal_groups[[2]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# save
+#############
+pdf('/PATH/projects/explant/out/figures/km_nsclc12_psm_dlt.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+#############
+
+```
+
+# KM - NSCLC 1/2 vs control - DLTs
+```{r}
+
+# groups
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(REC_TX_PROCEDURE_TY_BINARY=='double') %>%
+  ## filter
+  filter( !(TNM_STAGE_GROUP_GEN %in% c('unknown') & broad %in% c('NSCLC')) ) %>%
+  filter(PX_ID %in% dat$PX_ID) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp %in% c('NSCLC-3/4')) %>% 
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  pull(propensity_match) %>% 
+  as.character()
+matches <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+#############
+
+
+# plot
+#############
+tmp <- dat %>%
+  ## filter
+  #filter(PX_ID %in% matches) %>%
+  filter(PX_ID %in% matches | match_group2=='all') %>%
+  #filter( (PX_ID %in% matches & group!='control') | match_group2=='all') %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', as.character(broad))) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) 
+  filter(comp != "all")
+table(tmp$comp)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = F, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = '', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        legend.labs = c("Unmatched-SRTR", "PSM-Control", "NSCLC-1/2"),
+                        palette = c("grey", "black", pal_groups[[3]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# save
+#############
+pdf('/PATH/projects/explant/out/figures/km_nsclc34_psm_dlt.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+#############
+
+```
+
+
+# KM - Neuroendocrine vs control - DLTs
+```{r}
+
+# groups
+#############
+tmp <- readRDS(CASE_PATH) %>%
+  ## filter
+  filter(REC_TX_PROCEDURE_TY_BINARY=='double') %>%
+  ## filter
+  filter( !(TNM_STAGE_GROUP_GEN %in% c('unknown') & broad %in% c('NSCLC')) ) %>%
+  filter(PX_ID %in% dat$PX_ID) %>%
+  filter(!specific %in% c('SCLC')) %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', broad)) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', specific, comp)) %>%
+  filter(comp %in% c('Neuroendocrine')) %>% 
+  ## merge
+  merge(., readRDS(PSM_PATH), by='PX_ID') %>%
+  pull(propensity_match) %>% 
+  as.character()
+matches <- readRDS(PSM_PATH) %>% filter(propensity_match %in% tmp) %>% pull(PX_ID) 
+#############
+
+
+# plot
+#############
+tmp <- dat %>%
+  ## filter
+  #filter(PX_ID %in% matches) %>%
+  filter(PX_ID %in% matches | match_group2=='all') %>%
+  #filter( (PX_ID %in% matches & group!='control') | match_group2=='all') %>%
+  ## reformat
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('1','2') & broad=='NSCLC', 'NSCLC-1/2', as.character(broad))) %>%
+  mutate(comp=ifelse(TNM_STAGE_GROUP_GEN %in% c('3','4') & broad=='NSCLC', 'NSCLC-3/4', comp)) %>%
+  mutate(comp = ifelse(specific=='Neuroendocrine', as.character(specific), comp)) %>%
+  filter(comp != "all")
+table(tmp$comp)
+p <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp) %>%
+  survminer::ggsurvplot(., data = tmp, pval = T, pval.method = F, conf.int = F, 
+                        risk.table = T, tables.height = 0.35, risk.table.y.text=F,
+                        legend.title = '', legend = 'none', 
+                        xlim=c(0,120),break.time.by = 40,
+                        # legend.labs = c("Unmatched-SRTR", "PSM-Control", "Neuroendocrine"),
+                        # palette = c("grey", "black", pal_jco[[2]]),
+                        xlab = 'Time (months)');p
+## median
+fit <- survfit(Surv(OS_SRTR, DEAD_SRTR) ~ comp, data=tmp)
+surv_median(fit)
+#############
+
+
+# save
+#############
+pdf('/PATH/projects/explant/out/figures/km_neuro_psm_dlt.pdf', onefile = F, width = 6, height = 4.5)
+p
+dev.off()
+#############
+
+```
+
+

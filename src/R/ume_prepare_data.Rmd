@@ -1,0 +1,509 @@
+---
+title: "ielc_prepare_data"
+author: "Ryan Rebernick"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(data.table)
+library(magrittr)
+library(haven)
+library(readxl)
+library(ggplot2)
+library(cowplot)
+
+library(survminer)
+library(survival)
+
+
+# Misc
+not_all_na <- function(x) any(!is.na(x))
+
+```
+
+# Paths
+```{r}
+
+# joined data
+JOINED_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/joined/2023/ncdb_srtr_2023-04-24.sas7bdat'
+
+
+# SRTR data
+SRTR_TX_LU_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/tx_lu.sas7bdat'
+SRTR_TXF_LU_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/txf_lu.sas7bdat'
+SRTR_MALIG_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/malig.sas7bdat'
+SRTR_CAND_THOR_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/cand_thor.sas7bdat'
+SRTR_INSTITUTION_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/institution.sas7bdat'
+SRTR_IMMUNO_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/immuno.sas7bdat'
+SRTR_FU_IMMUNO_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/srtr/fol_immuno.sas7bdat'
+
+# misc
+HISTOLOGY_PATH <- '/PATH/projects/explant/data/ICD_0_3/icd03_2022-04-29.xlsx'
+ANNOTATED_HISTOLOGY_PATH = '/PATH/projects/explant/int/histology_behavior.xlsx'
+DUPLICATE_PATH <- '/PATH/projects/explant/data/NCDB_SRTR/joined/2023/duplicates/joined_duplicated_pxids-2023-08-07.tsv'
+INSTITUTION_SRTR_NCDB_PATH <- '/PATH/projects/explant/data/misc/srtr_ncdb_institutions - 2024-09-16.tsv'
+IMMUNOSUPPRESSIVE_ANNOTATION_PATH <- '/PATH/projects/explant/data/misc/immunosuppressive_classification - 2024-10-03.tsv'
+
+# out
+OUT_PATH <-  '/PATH/projects/explant/int/prepared_data/'
+
+```
+
+# Prepare histology codes
+```{r}
+
+hist <- readxl::read_xlsx(HISTOLOGY_PATH) %>%
+  ## filter
+  dplyr::filter(`Site Description` %in% c('LUNG & BRONCHUS')) %>%
+  ## reformat
+  dplyr::select(`Histology/Behavior`, `Histology Description`, `Histology/Behavior Description`) %>%
+  set_colnames(c('histology_behavior','histology_description', 'histology_behavior_desc'))
+
+```
+
+# Prepare institution data
+```{r}
+
+# institution annotated
+############
+institution <- fread(INSTITUTION_SRTR_NCDB_PATH) %>%
+  filter(NCDB=='yes')
+############
+
+```
+
+# Prepare SRTR data 
+```{r}
+
+# TX LU
+##############
+tx_lu <- read_sas(SRTR_TX_LU_PATH) %>%
+  ## remove all NA cols
+  dplyr::select(where(not_all_na)) %>%
+  ## filter
+  dplyr::filter(!CAN_GENDER %in% c('HIT')) %>%
+  ## reformat Sex/race
+  dplyr::mutate(SEX = factor(CAN_GENDER, labels = c('M', 'F'))) %>%
+  dplyr::mutate(AGE = CAN_AGE_AT_LISTING) %>%
+  dplyr::mutate(RACE = ifelse(CAN_RACE_SRTR %in% c(''), NA, CAN_RACE_SRTR)) %>%
+  dplyr::mutate(BMI = REC_BMI) %>%
+  dplyr::mutate(BMI = ifelse(BMI<10 | BMI>100, NA, BMI)) %>%
+  ## misc matching
+  dplyr::mutate(REC_CHRONIC_STEROIDS = ifelse(REC_CHRONIC_STEROIDS == 'U', NA, REC_CHRONIC_STEROIDS)) %>%
+  dplyr::mutate(REC_CHRONIC_STEROIDS = ifelse(REC_CHRONIC_STEROIDS == 'Y', T, F)) %>%
+  dplyr::mutate(PRIOR_THORACIC_SURGERY = ifelse(REC_LU_SURG=='Y' | REC_CARDIAC_SURG=='Y', T, F)) %>%
+  dplyr::mutate(PRIOR_THORACIC_SURGERY = ifelse(PRIOR_THORACIC_SURGERY==F & (REC_CARDIAC_SURG=='U' | REC_LU_SURG=='U'), NA, PRIOR_THORACIC_SURGERY)) %>%
+  dplyr::mutate(PRIOR_INFECT_IV_DRUG = ifelse(REC_INFECT_IV_DRUG == 'U', NA, REC_INFECT_IV_DRUG)) %>%
+  dplyr::mutate(PRIOR_INFECT_IV_DRUG = ifelse(PRIOR_INFECT_IV_DRUG == 'Y', T, F)) %>%
+  ## CAD/CEREBOVASCULAR
+  dplyr::mutate(PRIOR_CAD = NA) %>%
+  dplyr::mutate(PRIOR_CAD = ifelse(CAN_ANGINA_CAD %in% c(2,3), T, PRIOR_CAD)) %>%
+  dplyr::mutate(PRIOR_CAD = ifelse(CAN_ANGINA_CAD %in% c(1), F, PRIOR_CAD)) %>%
+  dplyr::mutate(PRIOR_CEREB_VASC = NA) %>%
+  dplyr::mutate(PRIOR_CEREB_VASC = ifelse(CAN_CEREB_VASC %in% c('Y'), T, PRIOR_CEREB_VASC)) %>%
+  dplyr::mutate(PRIOR_CEREB_VASC = ifelse(CAN_CEREB_VASC %in% c('N'), F, PRIOR_CEREB_VASC)) %>%
+  ## functional status/life support
+  dplyr::mutate(FUNCTIONAL_STATUS = ifelse(REC_FUNCTN_STAT %in% c(2060, 2070, 2080, 2090, 2100, 2), 'self_sufficient', NA)) %>%
+  dplyr::mutate(FUNCTIONAL_STATUS = ifelse(REC_FUNCTN_STAT %in% c(2050, 2040, 2030, 2020, 2010), 'not_self_sufficient', FUNCTIONAL_STATUS)) %>%
+  dplyr::mutate(LIFE_SUPPORT = ifelse(REC_LIFE_SUPPORT == 'Y', T, NA)) %>%
+  dplyr::mutate(LIFE_SUPPORT = ifelse(REC_LIFE_SUPPORT == 'N', F, LIFE_SUPPORT)) %>%
+  ## transplant indication
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(1604,1613), 'ILD-IPF', CAN_DGN)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(106, 1521, 1524,403,420, 1605,434,448, 219), 'ILD-other', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(1607, 113), 'COPD', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(1606), 'A1AT', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(1615,208,220,1601), 'PAH', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(1602), 'CF', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(404), 'BAC', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(CAN_DGN %in% c(1552,1555,1556,1557,1599,1608,1609,1612,1614,413,422,438,999), 'other', tmp)) %>%
+  dplyr::mutate(CAN_DGN = factor(tmp, levels = c('ILD-IPF', 'ILD-other', 'COPD', 'A1AT', 'PAH', 'CF', 'BAC', 'other'))) %>%
+  ## survival
+  dplyr::mutate(DEAD_SRTR = ifelse(!is.na(TFL_DEATH_DT) | TFL_LASTATUS=='D', 1, 0)) %>%
+  dplyr::mutate(TFL_LAFUDATE = as.Date(TFL_LAFUDATE, format = "%Y/%m/%d")) %>%
+  dplyr::mutate(REC_TX_DT = as.Date(REC_TX_DT, format = "%Y/%m/%d")) %>%
+  dplyr::mutate(OS_SRTR = as.numeric(difftime(time1 = TFL_LAFUDATE, time2 = REC_TX_DT,units = "days"))/30) %>%
+  ## cause of death
+  mutate(SRTR_COD = ifelse(TFL_COD %in% c(2600,2601,2699), 'malignancy', TFL_COD)) %>%
+  mutate(SRTR_COD = ifelse(TFL_COD %in% c(2602,2603,2604,2699), 'malignancy_other', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(TFL_COD %in% c(2000,2001,2002,2003,2004,2005,2006,2099), 'graft_failure', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(TFL_COD %in% c(998,999) | is.na(SRTR_COD), 'unknown', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(TFL_COD %in% c(2703,2704,2705), 'organ_failure', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(TFL_COD %in% c(2702,2701,2709,2706,2700,2707,2711,2708,2713,2710), 'medical_other', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(grepl('^21..$', SRTR_COD), 'infection', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(grepl('^22..$', SRTR_COD), 'cardiovascular', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(grepl('^23..$', SRTR_COD), 'pulmonary', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(grepl('^24..$', SRTR_COD), 'cerebrovascular', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(grepl('^25..$', SRTR_COD), 'hemorrhage', SRTR_COD)) %>%
+  mutate(SRTR_COD = ifelse(grepl('^28..$', SRTR_COD), 'trauma', SRTR_COD)) %>%
+  ## transplant type
+  dplyr::mutate(tmp = ifelse(REC_TX_PROCEDURE_TY %in% c(601,602), 'single', REC_TX_PROCEDURE_TY)) %>%
+  dplyr::mutate(tmp = ifelse(REC_TX_PROCEDURE_TY %in% c(605,606), NA, tmp)) %>%
+  dplyr::mutate(tmp = ifelse(tmp %in% c(603,604), 'double', tmp)) %>%
+  dplyr::mutate(REC_TX_PROCEDURE_TY_BINARY = factor(tmp, levels=c('single','double')))
+##############
+
+
+# CAND THORACIC
+##############
+cand_thor <- read_sas(SRTR_CAND_THOR_PATH) %>%
+  distinct(PX_ID, CAN_PACK_YEARS, CAN_HIST_CIGARETTE, CAN_CIGARETTE_GT10) %>%
+  ## smoking
+  dplyr::mutate(CAN_PACK_YEARS = ifelse(CAN_PACK_YEARS==998, NA, CAN_PACK_YEARS)) %>%
+  mutate(CAN_PACK_YEARS = ifelse(is.na(CAN_PACK_YEARS) & CAN_HIST_CIGARETTE=='N', 1, CAN_PACK_YEARS)) %>%
+  dplyr::mutate(CAN_PACK_YEARS = factor(CAN_PACK_YEARS, labels= c('0-10', '11-20', '21-30', '31-40', '41-50', '50+'))) %>%
+  mutate(CAN_HIST_CIGARETTE = ifelse(CAN_HIST_CIGARETTE == '', NA, CAN_HIST_CIGARETTE)) %>%
+  mutate(CAN_HIST_CIGARETTE = ifelse(CAN_HIST_CIGARETTE=='Y', 'yes', CAN_HIST_CIGARETTE)) %>%
+  mutate(CAN_HIST_CIGARETTE = ifelse(CAN_HIST_CIGARETTE=='N', 'no', CAN_HIST_CIGARETTE)) %>%
+  mutate(CAN_CIGARETTE_GT10 = ifelse(CAN_CIGARETTE_GT10=='Y','yes', CAN_CIGARETTE_GT10)) %>%
+  mutate(CAN_CIGARETTE_GT10 = ifelse(CAN_CIGARETTE_GT10=='N','no', CAN_CIGARETTE_GT10)) %>%
+  mutate(CAN_CIGARETTE_GT10 = ifelse(CAN_CIGARETTE_GT10 %in% c('U',''), NA, CAN_CIGARETTE_GT10)) %>%
+  ## composite
+  mutate(SMOKING=NA) %>%
+  mutate(SMOKING = ifelse(!is.na(CAN_PACK_YEARS), 'yes', SMOKING)) %>%
+  mutate(SMOKING = ifelse(!is.na(CAN_HIST_CIGARETTE) & CAN_HIST_CIGARETTE=='yes', 'yes', SMOKING)) %>%
+  mutate(SMOKING = ifelse(!is.na(CAN_CIGARETTE_GT10) & CAN_CIGARETTE_GT10=='yes', 'yes', SMOKING)) %>%
+  mutate(SMOKING = ifelse(!is.na(CAN_HIST_CIGARETTE) & CAN_HIST_CIGARETTE=='no', 'no', SMOKING))
+##############
+
+
+# malignancy
+##############
+## link to PX_ID
+tmp <- read_sas(SRTR_TXF_LU_PATH) %>%
+  distinct(PX_ID, TRR_FOL_ID)
+## 
+cand_malig <- read_sas(SRTR_MALIG_PATH) %>%
+  #filter(!is.na(MAL_PRETX_TUMOR_TY)) %>%
+  merge(., tmp, by='TRR_FOL_ID') %>%
+  distinct(PX_ID, MAL_PRETX_TUMOR_TY, MAL_POSTX_LU_CELL_TY, MAL_POSTX_TUMOR_LU, MAL_POSTX_TUMOR_PRIME_UNK) %>% 
+  arrange(desc(MAL_PRETX_TUMOR_TY)) %>%
+  filter(!duplicated(PX_ID)); cand_malig$PX_ID[duplicated(cand_malig$PX_ID)]
+##############
+
+
+# inital immunotherapy (TRR_ID)
+##############
+tmp <- fread(IMMUNOSUPPRESSIVE_ANNOTATION_PATH)
+tmp1 <- read_sas(SRTR_IMMUNO_PATH) %>%
+  merge(., tmp, by.x='REC_DRUG_CD', by.y='code') %>%
+  distinct(TRR_ID, REC_DRUG_INDUCTION, REC_DRUG_MAINT, annotation)
+## maintenance
+immuno1 <- tmp1 %>% 
+  filter(REC_DRUG_MAINT==1 & annotation!='other') %>%
+  distinct(TRR_ID, annotation) %>%
+  mutate(annotation = paste0('maint_',annotation)) %>%
+  mutate(given = 1) %>%
+  tidyr::spread(., annotation, given, fill=0) 
+## induction
+immuno2 <- tmp1 %>% 
+  filter(REC_DRUG_INDUCTION==1 & annotation!='other') %>%
+  distinct(TRR_ID, annotation) %>%
+  mutate(annotation = paste0('induction_',annotation)) %>%
+  mutate(given = 1) %>%
+  tidyr::spread(., annotation, given, fill=0) 
+immunohosp <- merge(immuno1, immuno2, by='TRR_ID', all=T) %>%
+  replace(is.na(.), 0)
+##############
+
+
+# follow up immuno
+##############
+tmp <- fread(IMMUNOSUPPRESSIVE_ANNOTATION_PATH)
+tmp1 <- read_sas(SRTR_FU_IMMUNO_PATH) %>%
+  merge(., tmp, by.x='TFL_IMMUNO_DRUG_CD', by.y='code') %>%
+  distinct(TRR_ID, TFL_FOL_CD, TFL_IMMUNO_DRUG_CD, annotation)
+## 3
+immuno1 <- tmp1 %>% 
+  filter(TFL_FOL_CD==3 & annotation!='other') %>%
+  distinct(TRR_ID, annotation) %>%
+  mutate(annotation = paste0('mo3_',annotation)) %>%
+  mutate(given = 1) %>%
+  tidyr::spread(., annotation, given, fill=0) 
+## 6
+immuno2 <- tmp1 %>% 
+  filter(TFL_FOL_CD==6 & annotation!='other') %>%
+  distinct(TRR_ID, annotation) %>%
+  mutate(annotation = paste0('mo6_',annotation)) %>%
+  mutate(given = 1) %>%
+  tidyr::spread(., annotation, given, fill=0) 
+## 1 year
+immuno3 <- tmp1 %>% 
+  filter(TFL_FOL_CD==10 & annotation!='other') %>%
+  distinct(TRR_ID, annotation) %>%
+  mutate(annotation = paste0('mo12_',annotation)) %>%
+  mutate(given = 1) %>%
+  tidyr::spread(., annotation, given, fill=0) 
+immunofu <- merge(immuno1, immuno2, by='TRR_ID', all=T) %>%
+  merge(., immuno3, by='TRR_ID', all=T) %>%
+  replace(is.na(.), 0)
+##############
+
+
+# combine immuno
+##############
+immuno <- merge(immunohosp, immunofu, by='TRR_ID', all=T) %>%
+  replace(is.na(.), 0)
+##############
+
+```
+
+# Prepare joined
+match_exact:    same dxpostal ∩ gender ∩ dob ∩ center name ∩ exact surgery date  (156 pts)
+match_group1:   same dxpostal ∩ gender ∩ dob ∩ center name ∩ 1 month surgery date (192 pts)
+match_group2:   gender ∩ dob ∩ center name ∩ 1 month surgery date (232 pts)
+match_group3:   gender ∩ dob ∩ center name ∩ exact surgery date (173 pts)
+```{r}
+
+# Clean Vars
+###############
+joined <- read_sas(JOINED_PATH) %>%
+  ## remove all NA cols
+  dplyr::select(where(not_all_na)) %>%
+  ## match groups
+  mutate(match_exact = ifelse(match_exact==1 & !is.na(match_exact), 'match', '')) %>%
+  mutate(match_group1 = ifelse(match_group1==1 & !is.na(match_group1), 'match', '')) %>%
+  mutate(match_group2 = ifelse(match_group2==1 & !is.na(match_group2), 'match', '')) %>%
+  mutate(match_group3 = ifelse(match_group3==1 & !is.na(match_group3), 'match', '')) %>%
+  ## grade/behavior/histology
+  dplyr::mutate(tmp = ifelse(GRADE %in% c(1), 'well_differentiated', 'unknown')) %>%
+  dplyr::mutate(tmp = ifelse(GRADE %in% c(2), 'moderately_differentiated', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(GRADE %in% c(3), 'poorly_differentiated', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(GRADE %in% c(4), 'undifferentiated', tmp)) %>%
+  dplyr::mutate(GRADE = factor(tmp, levels = c('well_differentiated','moderately_differentiated','poorly_differentiated','undifferentiated','unknown'))) %>%
+  dplyr::mutate(tmp = paste0(HISTOLOGY, '/', BEHAVIOR)) %>%
+  merge(., hist, by.y = 'histology_behavior', by.x = 'tmp', all.x=T) %>%
+  dplyr::mutate(tmp = ifelse(BEHAVIOR %in% c(2), 'in_situ', NA)) %>%
+  dplyr::mutate(tmp = ifelse(BEHAVIOR %in% c(3), 'invasive', tmp)) %>%
+  dplyr::mutate(BEHAVIOR = factor(tmp, levels = c('in_situ', 'invasive'))) %>%
+  ## nodes/staging
+  dplyr::mutate(tmp = ifelse(REGIONAL_NODES_EXAMINED == 0, 'none_examined', 'unknown')) %>%
+  dplyr::mutate(tmp = ifelse(REGIONAL_NODES_EXAMINED>0 & REGIONAL_NODES_EXAMINED<91, '1+nodes_examined', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(REGIONAL_NODES_EXAMINED %in% c(95,96,97,98), '1+nodes_examined', tmp)) %>%
+  dplyr::mutate(REGIONAL_NODES_EXAMINED = tmp) %>%
+  dplyr::mutate(tmp = ifelse(REGIONAL_NODES_POSITIVE==0, 'all_nodes_negative', 'unknown')) %>%
+  dplyr::mutate(tmp = ifelse(REGIONAL_NODES_POSITIVE %in% c(1:97), '1+_positive_nodes', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(REGIONAL_NODES_POSITIVE %in% c(98), 'no_nodes_examined', tmp)) %>%
+  dplyr::mutate(REGIONAL_NODES_POSITIVE = tmp) %>%
+  dplyr::arrange(ANALYTIC_STAGE_GROUP) %>%
+  dplyr::mutate(ANALYTIC_STAGE_GROUP = factor(ANALYTIC_STAGE_GROUP, labels = c(paste0('stage_', 0:4), 'ajcc_NA', 'ajcc_unknown'))) %>%
+  ## T stage
+  dplyr::mutate(COMB_T = ifelse(TNM_PATH_T %in% c('','88','pX'), 'pTx', TNM_PATH_T)) %>%
+  dplyr::mutate(COMB_T = ifelse(COMB_T == 'pTx' & !AJCC_TNM_PATH_T %in% c('','88','pTX'), AJCC_TNM_PATH_T , COMB_T)) %>%
+  dplyr::mutate(COMB_T = ifelse(COMB_T == 'pTx' & !TNM_CLIN_T %in% c('','88','cX'), TNM_CLIN_T , COMB_T)) %>%
+  dplyr::mutate(COMB_T = ifelse(COMB_T == 'pTx' & !AJCC_TNM_CLIN_T %in% c('','88','cTX'), AJCC_TNM_CLIN_T , COMB_T)) %>%
+  dplyr::mutate(COMB_T_GEN = tolower(COMB_T)) %>%
+  dplyr::mutate(COMB_T_GEN = gsub('a|b|c|^p|^pt|^ct', '', COMB_T_GEN)) %>%
+  dplyr::mutate(COMB_T_GEN = gsub('1mi|is|0','mi',COMB_T_GEN)) %>%
+  dplyr::mutate(COMB_T_GEN = factor(paste0('T',COMB_T_GEN), levels = c('Tmi','T1','T2','T3','T4', 'Tx'))) %>%
+  ##  N stage
+  dplyr::mutate(COMB_N = ifelse(TNM_PATH_N %in% c('','88','pX','cNX'), 'pNx', TNM_PATH_N)) %>%
+  dplyr::mutate(COMB_N = ifelse(COMB_N == 'pNx' & !AJCC_TNM_PATH_N %in% c('','88','pNX','cNX'), AJCC_TNM_PATH_N , COMB_N)) %>%
+  dplyr::mutate(COMB_N = ifelse(COMB_N == 'pNx' & !TNM_CLIN_N %in% c('','88','cX'), TNM_CLIN_N , COMB_N)) %>%
+  dplyr::mutate(COMB_N = ifelse(COMB_N == 'pNx' & !AJCC_TNM_CLIN_N %in% c('','88','cNX'), AJCC_TNM_CLIN_N , COMB_N)) %>%
+  dplyr::mutate(COMB_N_GEN = tolower(COMB_N)) %>%
+  dplyr::mutate(COMB_N_GEN = gsub('a|b|c|^p|^pn|^cn', '', COMB_N_GEN)) %>%
+  dplyr::mutate(COMB_N_GEN = factor(paste0('N',COMB_N_GEN), levels = c('N0','N1','N2','N3','Nx'))) %>%
+  ##  M stage
+  dplyr::mutate(COMB_M = ifelse(TNM_PATH_M %in% c('','88','pX'), 'pMx', TNM_PATH_M)) %>%
+  dplyr::mutate(COMB_M = ifelse(COMB_M == 'pMx' & !AJCC_TNM_PATH_M %in% c('','88'), AJCC_TNM_PATH_M , COMB_M)) %>%
+  dplyr::mutate(COMB_M = ifelse(COMB_M == 'pMx' & !TNM_CLIN_M %in% c('','88','cX'), TNM_CLIN_M , COMB_M)) %>%
+  dplyr::mutate(COMB_M = ifelse(COMB_M == 'pMx' & !AJCC_TNM_CLIN_M %in% c('','88','cNX'), AJCC_TNM_CLIN_M , COMB_M)) %>%
+  dplyr::mutate(COMB_M_GEN = tolower(COMB_M)) %>%
+  dplyr::mutate(COMB_M_GEN = gsub('a|b|c|^p|^pM|^cM|m', '', COMB_M_GEN)) %>%
+  dplyr::mutate(COMB_M_GEN = factor(paste0('M',COMB_M_GEN), levels = c('M0','M1','Mx'))) %>%
+  ## overall stage
+  dplyr::mutate(TNM_STAGE_GROUP = ifelse(TNM_PATH_STAGE_GROUP %in% c('','88','99'), 'unknown', TNM_PATH_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP = ifelse(TNM_STAGE_GROUP == 'unknown' & !(AJCC_TNM_PATH_STG_GRP %in% c('','99')), AJCC_TNM_PATH_STG_GRP, TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP = ifelse(TNM_STAGE_GROUP == 'unknown' & !(TNM_CLIN_STAGE_GROUP %in% c('','88','99','OC')), TNM_CLIN_STAGE_GROUP, TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP = ifelse(TNM_STAGE_GROUP == 'unknown' & !(AJCC_TNM_CLIN_STG_GRP %in% c('','88','99','OccultCarcinoma')), AJCC_TNM_CLIN_STG_GRP, TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP = gsub('1A.*', '1A', TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP = gsub('^1$', '1X', TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP = gsub('^4$*', '4X', TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP_GEN = gsub('A|B|C|X', '', TNM_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_STAGE_GROUP_GEN = factor(TNM_STAGE_GROUP_GEN, levels = c('0','1','2','3','4','unknown'))) %>%
+  ## Path staging - T
+  dplyr::mutate(PATH_T = ifelse(TNM_PATH_T %in% c('','88','pX'), 'pTx', TNM_PATH_T)) %>%
+  dplyr::mutate(PATH_T = ifelse(PATH_T == 'pTx' & !AJCC_TNM_PATH_T %in% c('','88','pTX'), AJCC_TNM_PATH_T , PATH_T)) %>%
+  dplyr::mutate(PATH_T_GEN = tolower(PATH_T)) %>%
+  dplyr::mutate(PATH_T_GEN = gsub('a|b|c|^p|^pt|^ct', '', PATH_T_GEN)) %>%
+  dplyr::mutate(PATH_T_GEN = gsub('1mi|is|0','mi',PATH_T_GEN)) %>%
+  dplyr::mutate(PATH_T_GEN = factor(paste0('T',PATH_T_GEN), levels = c('Tmi','T1','T2','T3','T4', 'Tx'))) %>%
+  ## Path staging - N
+  dplyr::mutate(PATH_N = ifelse(TNM_PATH_N %in% c('','88','pX','cNX'), 'pNx', TNM_PATH_N)) %>%
+  dplyr::mutate(PATH_N = ifelse(PATH_N == 'pNx' & !AJCC_TNM_PATH_N %in% c('','88','pNX','cNX'), AJCC_TNM_PATH_N , PATH_N)) %>%
+  dplyr::mutate(PATH_N_GEN = tolower(PATH_N)) %>%
+  dplyr::mutate(PATH_N_GEN = gsub('a|b|c|^p|^pn|^cn', '', PATH_N_GEN)) %>%
+  dplyr::mutate(PATH_N_GEN = factor(paste0('N',PATH_N_GEN), levels = c('N0','N1','N2','N3','Nx'))) %>%
+  ## Path staging - M
+  dplyr::mutate(PATH_M = ifelse(TNM_PATH_M %in% c('','88','pX'), 'pMx', TNM_PATH_M)) %>%
+  dplyr::mutate(PATH_M = ifelse(PATH_M == 'pMx' & !AJCC_TNM_PATH_M %in% c('','88'), AJCC_TNM_PATH_M , PATH_M)) %>%
+  dplyr::mutate(PATH_M_GEN = tolower(PATH_M)) %>%
+  dplyr::mutate(PATH_M_GEN = gsub('a|b|c|^p|^pM|^cM|m', '', PATH_M_GEN)) %>%
+  dplyr::mutate(PATH_M_GEN = factor(paste0('M',PATH_M_GEN), levels = c('M0','M1','Mx'))) %>%
+  ## Path staging - overall
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = ifelse(TNM_PATH_STAGE_GROUP %in% c('','88','99'), 'unknown', TNM_PATH_STAGE_GROUP)) %>%
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = ifelse(TNM_PATH_STAGE_GROUP_GEN == 'unknown' & !(AJCC_TNM_PATH_STG_GRP %in% c('','99')), AJCC_TNM_PATH_STG_GRP, TNM_PATH_STAGE_GROUP_GEN)) %>%
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = gsub('1A.*', '1A', TNM_PATH_STAGE_GROUP_GEN)) %>%
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = gsub('^1$', '1X', TNM_PATH_STAGE_GROUP_GEN)) %>%
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = gsub('^4$*', '4X', TNM_PATH_STAGE_GROUP_GEN)) %>%
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = gsub('A|B|C|X', '', TNM_PATH_STAGE_GROUP_GEN)) %>%
+  dplyr::mutate(TNM_PATH_STAGE_GROUP_GEN = factor(TNM_PATH_STAGE_GROUP_GEN, levels = c('0','1','2','3','4','unknown'))) %>%
+  ## mets
+  dplyr::mutate(METS_AT_DX_BONE = ifelse(METS_AT_DX_BONE == '', NA, METS_AT_DX_BONE)) %>%
+  dplyr::mutate(METS_AT_DX_BONE = factor(METS_AT_DX_BONE, labels = c('none', 'bone'))) %>%
+  dplyr::mutate(METS_AT_DX_BRAIN = ifelse(METS_AT_DX_BRAIN == '', NA, METS_AT_DX_BRAIN)) %>%
+  dplyr::mutate(METS_AT_DX_BRAIN = factor(METS_AT_DX_BRAIN, labels = c('none', 'brain'))) %>%
+  dplyr::mutate(METS_AT_DX_LIVER = ifelse(METS_AT_DX_LIVER == '', NA, METS_AT_DX_LIVER)) %>%
+  dplyr::mutate(METS_AT_DX_LIVER = factor(METS_AT_DX_LIVER, labels = c('none', 'liver'))) %>%
+  dplyr::mutate(METS_AT_DX_LUNG = ifelse(METS_AT_DX_LUNG == '', NA, METS_AT_DX_LUNG)) %>%
+  dplyr::mutate(METS_AT_DX_LUNG = factor(METS_AT_DX_LUNG, labels = c('none', 'lung'))) %>%
+  dplyr::mutate(METS_AT_DX_OTHER = ifelse(METS_AT_DX_OTHER == '', NA, METS_AT_DX_OTHER)) %>%
+  dplyr::mutate(METS_AT_DX_OTHER = factor(METS_AT_DX_OTHER, labels = c('none', 'other'))) %>%
+  dplyr::mutate(METS_AT_DX_DISTANT_LN = ifelse(METS_AT_DX_DISTANT_LN == '', NA, METS_AT_DX_DISTANT_LN)) %>%
+  dplyr::mutate(METS_AT_DX_DISTANT_LN = factor(METS_AT_DX_DISTANT_LN, labels = c('none', 'LN'))) %>%
+  dplyr::mutate(METS = paste(METS_AT_DX_BONE, METS_AT_DX_BRAIN, METS_AT_DX_LIVER, METS_AT_DX_LUNG, METS_AT_DX_OTHER, METS_AT_DX_DISTANT_LN, sep = ';')) %>%
+  dplyr::mutate(METS = ifelse(METS %in% c('NA;NA;NA;NA;NA;NA'), NA, METS)) %>%
+  dplyr::mutate(METS = stringr::str_replace_all(pattern = 'none;|;none', replacement = '', string = METS)) %>%
+  dplyr::mutate(METS_BINARY = ifelse(METS != 'none', T, F)) %>%
+  ## tumor size
+  dplyr::mutate(TUMOR_SIZE = ifelse(TUMOR_SIZE %in% c(991, 999, 998), 'unknown', TUMOR_SIZE)) %>%
+  dplyr::mutate(TUMOR_SIZE = ifelse(TUMOR_SIZE==990, 1, TUMOR_SIZE)) %>%
+  dplyr::mutate(tmp = ifelse(TUMOR_SIZE < 10, '1-10mm', TUMOR_SIZE)) %>%
+  dplyr::mutate(tmp = ifelse(TUMOR_SIZE < 20 & TUMOR_SIZE >=10, '10-20mm', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(TUMOR_SIZE < 50 & TUMOR_SIZE >=20, '20-50mm', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(TUMOR_SIZE >= 50, '50+mm', tmp)) %>%
+  dplyr::mutate(TUMOR_SIZE_GP = factor(tmp, levels = c('1-10mm', '10-20mm', '20-50mm', '50+mm', 'unknown'))) %>%
+  ## survival NCDB
+  dplyr::mutate(DEAD_NCDB = ifelse(PUF_VITAL_STATUS == 0, 1, NA)) %>%
+  dplyr::mutate(DEAD_NCDB = ifelse(PUF_VITAL_STATUS == 1, 0, DEAD_NCDB)) %>%
+  dplyr::rename(OS_NCDB = DX_LASTCONTACT_DEATH_MONTHS) %>%
+  ## treatment given
+  dplyr::mutate(tmp = ifelse(RX_SUMM_TREATMENT_STATUS == 0, 'none_given', 'unknown')) %>%
+  dplyr::mutate(tmp = ifelse(RX_SUMM_TREATMENT_STATUS == 1, 'treatment_given', tmp)) %>%
+  dplyr::mutate(RX_SUMM_TREATMENT_STATUS = factor(tmp, levels = c('none_given', 'treatment_given', 'unknown'))) %>%
+  mutate(TREATMENT_SURGERY = ifelse( DX_SURG_STARTED_DAYS>0, 'surgery', 'none')) %>%
+  mutate(TREATMENT_SURGERY = ifelse( is.na(TREATMENT_SURGERY), 'unknown', TREATMENT_SURGERY)) %>%
+  mutate(TREATMENT_RADIATION = ifelse( PHASE_I_RT_VOLUME %in% c(12,14,30,39), 'radiation', 'none')) %>%
+  mutate(TREATMENT_RADIATION = ifelse( is.na(PHASE_I_RT_VOLUME), 'unknown', TREATMENT_RADIATION)) %>%
+  mutate(TREATMENT_CHEMO = ifelse( RX_SUMM_CHEMO %in% c(1,2,3), 'chemotherapy', 'none')) %>%
+  mutate(TREATMENT_CHEMO = ifelse( is.na(RX_SUMM_CHEMO), 'unknown', TREATMENT_CHEMO)) %>%
+  mutate(TREATMENT_IMMUNO = ifelse( RX_SUMM_IMMUNOTHERAPY %in% c(1), 'immunotherapy', 'none')) %>%
+  mutate(TREATMENT_IMMUNO = ifelse( is.na(RX_SUMM_IMMUNOTHERAPY), 'unknown', TREATMENT_IMMUNO)) %>%
+  mutate(TREATMENT_ANY = ifelse(TREATMENT_SURGERY %in% c('surgery'), 'surgery', '' ) ) %>%
+  mutate(TREATMENT_ANY = ifelse(TREATMENT_RADIATION %in% c('radiation'), paste0(TREATMENT_ANY, ';radiation'), TREATMENT_ANY) ) %>%
+  mutate(TREATMENT_ANY = ifelse(TREATMENT_CHEMO %in% c('chemotherapy'), paste0(TREATMENT_ANY, ';chemotherapy'), TREATMENT_ANY) ) %>%
+  mutate(TREATMENT_ANY = ifelse(TREATMENT_IMMUNO %in% c('immunotherapy'), paste0(TREATMENT_ANY, ';immunotherapy'), TREATMENT_ANY) ) %>%
+  mutate(TREATMENT_ANY = ifelse( TREATMENT_ANY=='' & (TREATMENT_SURGERY=='unknown' | TREATMENT_CHEMO=='unknown' |
+                                   TREATMENT_RADIATION=='unknown' | TREATMENT_IMMUNO=='unknown'),
+                                 'unknown', TREATMENT_ANY)) %>%
+  mutate(TREATMENT_ANY = ifelse(TREATMENT_ANY=='', 'none', TREATMENT_ANY)) %>%
+  
+  ## Radiation ever
+  dplyr::mutate(RECIEVED_RADIATION = ifelse(!is.na(DX_RAD_STARTED_DAYS), T,  F)) %>%
+  ## systemic ever
+  dplyr::mutate(RECIEVED_SYSTEMIC = ifelse(!is.na(DX_SYSTEMIC_STARTED_DAYS), T,  F)) %>%
+  ## previous transplant
+  dplyr::mutate(CAN_PREV_LU = ifelse(CAN_PREV_LU == 1, TRUE, FALSE)) %>%
+  ## surgical margins
+  dplyr::mutate(tmp = ifelse(RX_SUMM_SURGICAL_MARGINS %in% c(9,8,7), 'unknown', RX_SUMM_SURGICAL_MARGINS)) %>%
+  dplyr::mutate(tmp = ifelse(RX_SUMM_SURGICAL_MARGINS %in% c(0), 'no_residual_tumor', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(RX_SUMM_SURGICAL_MARGINS %in% c(1,2,3), 'residual_tumor', tmp)) %>%
+  dplyr::mutate(RX_SUMM_SURGICAL_MARGINS = factor(tmp, levels = c('no_residual_tumor', 'residual_tumor', 'unknown'))) %>%
+  ## laterality
+  dplyr::mutate(tmp = ifelse(LATERALITY %in% c(0,9), 'unknown', LATERALITY)) %>%
+  dplyr::mutate(tmp = ifelse(LATERALITY %in% c(1), 'right', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(LATERALITY %in% c(2), 'left', tmp)) %>%
+  dplyr::mutate(tmp = ifelse(LATERALITY %in% c(4), 'bilateral', tmp)) %>%
+  dplyr::mutate(LATERALITY = factor(tmp, levels = c('right', 'left','bilateral','unknown')))
+###############
+
+```
+
+# cases
+```{r}
+
+# Add
+###############
+## srtr cols
+tmp <- colnames(joined)[colnames(joined) %in% colnames(tx_lu)]
+tmp <- tmp[!grepl('PX_ID', tmp)]
+## select cases
+tmp1 <- joined %>%
+  ## remove SRTR cols
+  select(-all_of(tmp)) %>%
+  ## add
+  merge(readxl::read_xlsx(ANNOTATED_HISTOLOGY_PATH), ., by='histology_behavior_desc', all.y=T) %>%
+  merge(., cand_thor, by='PX_ID', all.x=T) %>% 
+  merge(., cand_malig, by='PX_ID', all.x=T) %>% 
+  merge(., tx_lu, by='PX_ID', all.x=T) %>%
+  merge(., immuno, by='TRR_ID', all.x=T) %>%
+  ## filter
+  dplyr::filter(included_in_study == 'yes') %>%
+  ## reformat
+  dplyr::mutate(group = factor(specific, levels = c('Adenocarcinoma', 'SCC', 'NSCLC-other', 'Neuroendocrine', 'SCLC', 'in_situ'))) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( is.na(REC_MALIG_TY), 'none', REC_MALIG_TY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( PRIOR_MALIGNANCY %in% c(128), 'lung', PRIOR_MALIGNANCY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( !PRIOR_MALIGNANCY %in% c('lung','none'), 'other', PRIOR_MALIGNANCY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( MAL_PRETX_TUMOR_TY %in% c(22), 'lung', PRIOR_MALIGNANCY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( MAL_PRETX_TUMOR_TY %in% c(25), 'other', PRIOR_MALIGNANCY))
+###############
+
+
+# remove duplicates PRN
+###############
+## id
+tmp <- fread(DUPLICATE_PATH) %>% filter(decision=='remove') %>% pull(PUF_CASE_ID)
+## filter
+tmp1 <- tmp1[!tmp1$PUF_CASE_ID %in% tmp,]
+###############
+
+
+# Remove other exclusion criteria
+###############
+case <- tmp1 %>%
+  filter(REC_TX_DT > "2004-01-01") %>%
+  filter(!PRIOR_MALIGNANCY %in% c('lung', 'other')) 
+###############
+
+```
+
+# controls
+```{r}
+
+# Add
+###############
+control <- tx_lu %>%
+  ## remove all NA cols
+  dplyr::select(where(not_all_na)) %>%
+  ## add
+  merge(., cand_thor, by='PX_ID', all.x=T) %>%
+  merge(., cand_malig, by='PX_ID', all.x=T) %>%
+  merge(., immuno, by='TRR_ID', all.x=T) %>%
+  ## 
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( is.na(REC_MALIG_TY), 'none', REC_MALIG_TY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( PRIOR_MALIGNANCY %in% c(128), 'lung', PRIOR_MALIGNANCY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( !PRIOR_MALIGNANCY %in% c('lung','none'), 'other', PRIOR_MALIGNANCY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( MAL_PRETX_TUMOR_TY %in% c(22), 'lung', PRIOR_MALIGNANCY)) %>%
+  dplyr::mutate(PRIOR_MALIGNANCY = ifelse( MAL_PRETX_TUMOR_TY %in% c(25), 'other', PRIOR_MALIGNANCY)) %>%
+  ## filter
+  filter(!PX_ID %in% joined$PX_ID) %>%
+  filter(REC_CTR_CD %in% institution$REC_CTR_CD) %>%
+  filter(!PRIOR_MALIGNANCY %in% c('lung', 'other')) %>%
+  filter(AGE > 18) %>%
+  filter(REC_TX_DT > "2004-01-01") 
+###############
+
+```
+
+# save
+```{r}
+
+# save
+# saveRDS(case, paste0(OUT_PATH, 'case_', format(Sys.time(), "%Y-%m-%d"),'.rds'))
+# saveRDS(control, paste0(OUT_PATH, 'control_', format(Sys.time(), "%Y-%m-%d"),'.rds'))
+
+```

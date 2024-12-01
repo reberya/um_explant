@@ -1,0 +1,167 @@
+---
+title: "propensity_score_matching"
+output: html_document
+date: "2023-07-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(data.table)
+library(magrittr)
+library(dplyr)
+library(haven)
+library(readxl)
+library(ggplot2)
+library(cowplot)
+
+library(survminer)
+library(survival)
+library(MatchIt)
+
+```
+
+# Paths
+```{r}
+
+# cohorts
+CASE_PATH <-  '/PATH/projects/explant/int/prepared_data/case_2024-10-04.rds'
+CONTROL_PATH <-  '/PATH/projects/explant/int/prepared_data/control_2024-10-04.rds'
+
+
+# misc
+OUT_PATH <-  '/PATH/projects/explant/int/prepared_data/'
+
+```
+
+# Prepare for matching
+```{r}
+
+# Case
+##############
+tmp1 <- readRDS(CASE_PATH) %>%
+  mutate(cohort = 'ielc') %>%
+  ## reformat
+  select(PX_ID, cohort, broad, specific, group, 
+         match_exact, match_group1, match_group2, match_group3,
+         AGE, SEX, RACE, BMI, SMOKING,
+         REC_TX_PROCEDURE_TY_BINARY, CAN_DGN, PRIOR_MALIGNANCY, 
+         FUNCTIONAL_STATUS, LIFE_SUPPORT, PRIOR_THORACIC_SURGERY,
+         REC_TX_DT) 
+##############
+
+
+# Control
+##############
+tmp2 <- readRDS(CONTROL_PATH) %>%
+  ## reformat
+  mutate(cohort = 'control_all') %>%
+  mutate(broad='all') %>%
+  mutate(specific='all') %>%
+  mutate(group='all') %>%
+  mutate(match_exact = 'all') %>%
+  mutate(match_group1 = 'all') %>%
+  mutate(match_group2 = 'all') %>%
+  mutate(match_group3 = 'all') %>%
+  select(PX_ID, cohort, broad, specific, group, 
+         match_exact, match_group1, match_group2, match_group3,
+         AGE, SEX, RACE, BMI, SMOKING,
+         REC_TX_PROCEDURE_TY_BINARY, CAN_DGN, PRIOR_MALIGNANCY, 
+         FUNCTIONAL_STATUS, LIFE_SUPPORT, PRIOR_THORACIC_SURGERY,
+         REC_TX_DT) 
+##############
+
+
+# Combine
+##############
+dat <- rbind(tmp1, tmp2) %>%
+  ## filter
+  filter(!is.na(AGE)) %>%
+  filter(!is.na(SEX)) %>%
+  filter(!is.na(RACE)) %>%
+  filter(!is.na(BMI)) %>%
+  filter(!is.na(SMOKING)) %>%
+  filter(!is.na(REC_TX_PROCEDURE_TY_BINARY)) %>%
+  filter(!is.na(CAN_DGN)) %>%
+  filter(!is.na(FUNCTIONAL_STATUS)) %>%
+  filter(!is.na(LIFE_SUPPORT)) %>%
+  filter(!is.na(PRIOR_THORACIC_SURGERY)) %>%
+  filter(!is.na(REC_TX_DT)) %>%
+  ## reformat
+  mutate(FUNCTIONAL_STATUS = ifelse(FUNCTIONAL_STATUS=='self_sufficient', 1, 0)) %>%
+  mutate(SEX = ifelse(SEX=='M', 1, 0)) %>%
+  mutate(SMOKING = ifelse(SMOKING=='yes', 1, 0)) %>%
+  mutate(LIFE_SUPPORT = ifelse(LIFE_SUPPORT==T, 1, 0)) %>%
+  mutate(PRIOR_THORACIC_SURGERY = ifelse(PRIOR_THORACIC_SURGERY==T, 1, 0)) %>%
+  mutate(TRANSPLANT_YEAR = year(REC_TX_DT));table(dat$cohort)
+##############
+
+```
+
+# matching (nearest; glm)
+```{r}
+
+# Variable comparison
+################
+summary1 <- dat %>%
+  ## reformat/filter
+  mutate(comp=match_group2) %>%
+  filter(comp !='') %>%
+  mutate(comp=ifelse(match_group2=='match', 1, 0)) %>%
+  ## match
+  matchit(comp ~ AGE + SEX + RACE + BMI + REC_TX_PROCEDURE_TY_BINARY + CAN_DGN + SMOKING + LIFE_SUPPORT + PRIOR_THORACIC_SURGERY + FUNCTIONAL_STATUS + TRANSPLANT_YEAR,
+                   data = ., method = NULL, distance = "glm") %>%
+  summary();summary1
+################
+
+
+# match
+################
+set.seed(1)
+m1 <- dat %>%
+  ## reformat/filter
+  mutate(comp=match_group2) %>%
+  filter(comp !='') %>%
+  mutate(comp=ifelse(match_group2=='match', 1, 0)) %>%
+  ## match
+  matchit(comp ~ AGE + SEX + RACE + BMI + REC_TX_PROCEDURE_TY_BINARY + CAN_DGN + SMOKING + LIFE_SUPPORT + PRIOR_THORACIC_SURGERY + FUNCTIONAL_STATUS + TRANSPLANT_YEAR,
+                   data = ., method = 'nearest', distance = "glm", ratio = 2);m1
+## summary
+summary2 <- summary(m1, un = F);summary2
+plot(m1, type = "jitter", interactive = FALSE)
+plot(m1, type = "density", interactive = FALSE, which.xs = c('AGE','SEX','BMI','REC_TX_PROCEDURE_TY_BINARY', 'CAN_DGN','SMOKING', 'TRANSPLANT_YEAR'))
+################
+
+
+```
+
+# save
+```{r}
+
+# Combine
+##############
+export <- dat %>%
+  mutate(propensity_match =m1$subclass) %>%
+  mutate(propensity_score =m1$distance) %>%
+  mutate(propensity_model = paste0(m1$call, collapse = ' ')) %>%
+  select(PX_ID, propensity_match, propensity_score, propensity_model) %>%
+  arrange(propensity_match)
+##############
+
+
+# save
+##############
+# saveRDS(export, paste0(OUT_PATH, 'psm_', format(Sys.time(), "%Y-%m-%d"),'.rds'))
+# write.table(summary1$sum.all, paste0(OUT_PATH, 'psm_summary_all_', format(Sys.time(), "%Y-%m-%d"),'.txt'), row.names = T, col.names = T, quote = F, sep = '\t' )
+# write.table(summary2$sum.matched, paste0(OUT_PATH, 'psm_summary_matched_', format(Sys.time(), "%Y-%m-%d"),'.txt'), row.names = T, col.names = T, quote = F, sep = '\t' )
+##############
+
+```
+
+
+
+
+
+
+
